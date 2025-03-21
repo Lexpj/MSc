@@ -1,0 +1,12 @@
+name: SB3
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11.11
+  - pip
+  - pip:
+      - stable-baselines3[extra]
+      - gymnasium
+      - gymnasium[mujoco]
+      - pyyaml

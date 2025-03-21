@@ -1,0 +1,54 @@
+import gymnasium as gym
+from stable_baselines3 import PPO
+import sys
+sys.path.append('..')
+from arghandler import handle
+
+def main(config):
+    env = gym.make(config['env'])
+    
+    logpath = f"./results/{config['alg']}_{config['env']}_{config['steps']}/{config['hps']}" if config['log'] else None
+    
+    # This does not account for not-provided variables. Still have to adjust that!!
+    model = PPO(policy=config['model']['policy'],
+                env=env,
+                learning_rate=config['train']['learning_rate'],
+                n_steps=config['train']['n_steps'],
+                batch_size=config['train']['batch_size'],
+                n_epochs=config['train']['n_epochs'],
+                gamma=config['train']['gamma'],
+                gae_lambda=config['train']['gae_lambda'],
+                clip_range=config['train']['clip_range'],
+                clip_range_vf=config['train']['clip_range_vf'],
+                normalize_advantage=config['train']['normalize_advantage'],
+                ent_coef=config['train']['ent_coef'],
+                vf_coef=config['train']['vf_coef'],
+                max_grad_norm=config['train']['max_grad_norm'],
+                use_sde=config['train']['use_sde'],
+                sde_sample_freq=config['train']['sde_sample_freq'],
+                rollout_buffer_class=config['train']['rollout_buffer_class'],
+                rollout_buffer_kwargs=config['train']['rollout_buffer_kwargs'],
+                target_kl=config['train']['target_kl'],
+                stats_window_size=config['train']['stats_window_size'],
+                  
+                policy_kwargs=config['model']['policy_kwargs'],
+                  
+                tensorboard_log=logpath
+            )
+    
+    model.learn(total_timesteps=config['steps'],
+                tb_log_name=f"{config['rep']}",
+                log_interval=config['logging']['log_interval']
+            )
+            
+    if config['save_model']:
+        model.save(f"./results/{config['alg']}_{config['env']}_{config['steps']}/{config['hps']}/{config['rep']}_{config['lastfolder']}/model")
+
+
+if __name__ == "__main__":
+     
+     
+
+     config = handle(sys.argv)
+     main(config)
+     
