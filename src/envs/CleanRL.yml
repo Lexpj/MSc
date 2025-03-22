@@ -1,0 +1,9 @@
+name: CleanRL
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.8.3
+  - pip
+  - pip:
+      - pyyaml

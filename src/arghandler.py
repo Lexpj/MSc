@@ -26,11 +26,16 @@ def handle(args):
         with open("../"+args.hps) as f:
             config = yaml.safe_load(f)
     config['hps'] = args.hps.split("/")[-1].split(".")[0].split("_")[-1]
+    
+    
+    
     # Last folder (for repeated experiments)
     try: 
-        config['lastfolder'] = 1+max([int(x.split("_")[1]) for x in os.listdir("./{args.fw}/results/{args.alg}_{args.env}_{args.steps}/{config['hps']}")])
+        config['lastfolder'] = 1+max([int(x.split("_")[1]) for x in os.listdir(f"./{args.fw}/results/{args.alg}_{args.env}_{args.steps}/{config['hps']}")])
     except Exception as e:
-        print(e)
+        if args.steps != 1:
+            print(e)
+            print("Using initial folder")
         config['lastfolder'] = 1
     
     config['env'] = args.env

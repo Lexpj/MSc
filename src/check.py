@@ -20,7 +20,7 @@ try:
     result = subprocess.check_output(command, shell=True, text=True)
     print("res",result)
     if "ERROR" in result:
-        raise Exception(result) # Ironic
+    	raise Exception(result)
     sys.exit(0)
 except Exception as e:
     with open("check_log.txt","w+") as f:

@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --mail-user=""
+#SBATCH --mail-user="lex.janssens@live.nl"
 #SBATCH --mail-type="ALL"
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1

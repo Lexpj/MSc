@@ -1,4 +1,1 @@
-Experiments:
-
--
-
+Since the APIs of Stable Baselines 3 are straightforward, the files themselves are concise. The only thing happening outside of the scope of this folder is argument handling, such that a configuration (in the form of a dictionary) is passed to the algorithm.

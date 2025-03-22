@@ -1,0 +1,42 @@
+# File containing the default hyperparameters of PPO from framework Stable Baselines 3
+# The hyperparameters as listed below can be found here: 
+# https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html#stable_baselines3.ppo.PPO
+
+train:
+  learning_rate: 0.00025
+  n_steps: 128
+  batch_size: 0 # Calculated at runtime
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95 
+  clip_range: 0.2
+  clip_range_vf: true
+  normalize_advantage: true
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5 
+  use_sde: false
+  sde_sample_freq: -1 
+  rollout_buffer_class: null # not used
+  rollout_buffer_kwargs: null #not used
+  target_kl: null
+  stats_window_size: null #not used
+  
+  num_minibatches: 4
+  anneal_lr: true
+  num_envs: 1
+  
+  
+  
+model: # not used
+  policy: "MlpPolicy" # Denote that this should be CnnPolicy if applied on Atari.
+  policy_kwargs:  
+    net_arch: [64,64]
+    #activation_fn: tanh
+    ortho_init: true
+  
+logging: # not used
+  tensorboard_log: null # Denote that this is configurable via the --log tag.
+  log_interval: 1
+  
+  

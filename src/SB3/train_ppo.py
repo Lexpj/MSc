@@ -1,7 +1,7 @@
 import gymnasium as gym
 from stable_baselines3 import PPO
-import sys
-sys.path.append('..')
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from arghandler import handle
 
 def main(config):

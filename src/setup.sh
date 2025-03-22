@@ -4,7 +4,8 @@ echo "Setting up Conda environments..."
 
 # Define available environments and their YAML files
 declare -A env_files
-env_files["SB3"]="./src/envs/SB3.yml"
+env_files["SB3"]="./envs/SB3.yml"
+env_files["CleanRL"]="./envs/CleanRL.yml"
 
 # Function to install an environment
 install_env() {
@@ -19,6 +20,7 @@ install_env() {
     echo "Setting up environment: $env_name"
     conda env remove -n "$env_name" -y
     conda env create -f "$env_file"
+    bash "./envs/${env_name}.sh"
 
     if conda info --envs | grep -q "$env_name"; then
         echo "Environment $env_name created successfully."
@@ -46,3 +48,4 @@ else
 fi
 
 echo "Setup complete!"
+
