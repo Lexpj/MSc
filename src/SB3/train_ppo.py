@@ -5,7 +5,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from arghandler import handle
 
 def main(config):
-    env = gym.make(config['env'])
+
+    if config['env_lib'] == 'atari':
+        import ale_py
+        gym.register_envs(ale_py)
+        env = gym.make("ALE/"+config['env'])
+    else:
+        env = gym.make(config['env'])
     
     logpath = f"./results/{config['alg']}_{config['env']}_{config['steps']}/{config['hps']}" if config['log'] else None
     

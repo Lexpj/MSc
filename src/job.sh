@@ -27,15 +27,21 @@ if [[ ${rep} == "" ]]; then
 else
     args+=('--rep' ${rep})
 fi
-# Hyperparameters by default the file corresponding to FW and ALG default hps
+# Hyperparameters by default the file corresponding to FW and ALG default hps of specific environment set
 if [[ ${hps} == "" ]]; then
     key="--hps"
-    value="./hps/${fw}_${alg}_default.yml"
+    value="./hps/${fw}_${alg}_default"
+    value+=$(python -c "import env_utils; print(env_utils.identify_env(\"${env}\"))")
+    value+=".yml"
     v="${key/--/}"
     declare $v="${value}"
 else
     args+=('--hps' ${hps})
 fi
+
+# If the environment is an Atari environment, it should be preprocessed such that ALE/[env] is not a folder
+env=$(python -c "import env_utils; print(env_utils.format_atari(\"${env}\"))")
+
 # Initial run to catch errors before sending it to HPC
 
 if [[ $( python ./check.py --steps=${steps} --env=${env} --fw=${fw} --rep=${rep} --alg=${alg} --hps=${hps} ) ]]; then

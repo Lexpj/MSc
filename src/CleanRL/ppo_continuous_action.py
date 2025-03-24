@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from collections import deque
 
 import gymnasium as gym
 import numpy as np
@@ -74,15 +75,22 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-
+    minibatch_size: int = 64
+    """the mini-batch size"""
+    
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
-    minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+    # meta-hyperparameters or unused hyperparameters
+    fw: str = "CleanRL" 
+    rep: int = 1
+    hps: str = "./hps/CleanRL_ppo_defaultmujoco.yml"
+    lastfolder: int = 1
+    alg: str = "ppo"
+    stats_window_size: int = 1 
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
@@ -140,13 +148,15 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
+    def save(self,args):
+        torch.save(self.critic.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/critic.pt")
+        torch.save(self.actor_mean.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/actor_mean.pt")
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.rep}_{args.lastfolder}"
     if args.track:
         import wandb
 
@@ -159,16 +169,16 @@ if __name__ == "__main__":
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    #random.seed(args.seed)
+    #np.random.seed(args.seed)
+    #torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
@@ -196,7 +206,11 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-
+    
+    # Statistical stuff for plotting
+    ep_len_mean = deque(maxlen=args.stats_window_size)
+    ep_rew_mean = deque(maxlen=args.stats_window_size)
+    
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -228,6 +242,11 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        # Statistics matching SB3
+                        ep_len_mean.append(info["episode"]["l"])
+                        ep_rew_mean.append(info["episode"]["r"])
+                        writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
+                        writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -321,7 +340,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("time/fps", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
@@ -351,3 +370,4 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
+    agent.save(args)

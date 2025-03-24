@@ -1,6 +1,7 @@
 import yaml
 import os
 import argparse
+from env_utils import identify_env
 
 def handle(args):
     parser = argparse.ArgumentParser(
@@ -16,8 +17,21 @@ def handle(args):
     parser.add_argument("--save_model", required=False, action="store_true")
     
     args=parser.parse_args()
-    if not args.hps: #Note that this is handled automatically when called via a SLURM job
-        args.hps = f"./hps/{args.fw}_{args.alg}_default.yml"
+    
+    # get library of environment
+    env_lib = identify_env(args.env)
+    
+    if not args.hps or args.hps == 'none': 
+    	# Handle which default file to use based on the env_lib
+        args.hps = f"./hps/{args.fw}_{args.alg}_default"
+        
+        if env_lib == 'classic_control':
+            args.hps += 'discrete.yml'
+        elif env_lib == 'mujoco':
+            args.hps += 'mujoco.yml'
+        elif env_lib == 'atari':
+            args.hps += 'atari.yml'
+        
     print(f"Using hyperparameter file {args.hps}")
     try:
         with open(args.hps) as f:
@@ -26,7 +40,7 @@ def handle(args):
         with open("../"+args.hps) as f:
             config = yaml.safe_load(f)
     config['hps'] = args.hps.split("/")[-1].split(".")[0].split("_")[-1]
-    
+    config['env_lib'] = env_lib
     
     
     # Last folder (for repeated experiments)

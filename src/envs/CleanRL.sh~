@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Additional arguments can be applied for installation
+# For CleanRL, setup the packages via their requirement files. 
+
+conda activate CleanRL
+pip install -r "./envs/req_cleanrl/requirements.txt"
+pip install -r "./envs/req_cleanrl/requirements-atari.txt"
+pip install -r "./envs/req_cleanrl/requirements-mujoco.txt"
+conda deactivate

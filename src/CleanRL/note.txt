@@ -1,0 +1,7 @@
+Adjustments from the code:
+
+ppo.py:
+- imported deque package 
+- added support for episode_mean_rew and episode_mean_len over a statistic window size, similar to SB3
+- changed SPS to FPS, similar to SB3
+- mini_batchsize is the same as batch_size of SB3, though here it is calculated via n_envs and n_steps, though we do not need this specifically since n_envs=1. So, this CleanRL's PPO is now made to accept argument batch_size (=mini_batchsize)
