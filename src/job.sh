@@ -46,7 +46,7 @@ env=$(python -c "import env_utils; print(env_utils.format_atari(\"${env}\"))")
 
 if [[ $( python ./check.py --steps=${steps} --env=${env} --fw=${fw} --rep=${rep} --alg=${alg} --hps=${hps} ) ]]; then
     echo "Check successful, starting SBATCH"
-    hpsconfig="${hps##*_}"
+    hpsconfig="${hps##*/}"
     hpsconfig="${hpsconfig%.yml}"
     sbatch -J "${fw}_${env}_${steps}" -o "./${fw}/results/${alg}_${env}_${steps}/${hpsconfig}/%x_%j.out" -a "1-${rep}" -t "${time}" --mem "${mem}" -p "${par}" job.slurm "${fw}" "${env}" "${steps}" "${rep}" "${alg}" "${hps}"
     # By default, SLURM jobs have the --log and --save_model flag

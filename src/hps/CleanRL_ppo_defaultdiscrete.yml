@@ -31,7 +31,7 @@ model: # not used
   policy: "MlpPolicy" # Denote that this should be CnnPolicy if applied on Atari.
   policy_kwargs:  
     net_arch: [64,64]
-    #activation_fn: tanh
+    activation: Tanh
     ortho_init: true
   
 logging: # not used

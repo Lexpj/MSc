@@ -3,6 +3,7 @@ from stable_baselines3 import PPO
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from arghandler import handle
+import torch
 
 def main(config):
 
@@ -12,6 +13,14 @@ def main(config):
         env = gym.make("ALE/"+config['env'])
     else:
         env = gym.make(config['env'])
+    
+    if hasattr(torch.nn, config['model']['policy_kwargs']['activation']):
+        activation_fn = getattr(torch.nn, config['model']['policy_kwargs']['activation'])
+    
+    policy_kwargs = dict(activation_fn=activation_fn,
+                         net_arch=dict(pi=config['model']['policy_kwargs']['net_arch'], 
+                                       vf=config['model']['policy_kwargs']['net_arch']),
+                         ortho_init=config['model']['policy_kwargs']['ortho_init'])
     
     logpath = f"./results/{config['alg']}_{config['env']}_{config['steps']}/{config['hps']}" if config['log'] else None
     
@@ -37,7 +46,7 @@ def main(config):
                 target_kl=config['train']['target_kl'],
                 stats_window_size=config['train']['stats_window_size'],
                   
-                policy_kwargs=config['model']['policy_kwargs'],
+                policy_kwargs=policy_kwargs,
                   
                 tensorboard_log=logpath
             )

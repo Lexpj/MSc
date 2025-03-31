@@ -39,7 +39,7 @@ def handle(args):
     except:
         with open("../"+args.hps) as f:
             config = yaml.safe_load(f)
-    config['hps'] = args.hps.split("/")[-1].split(".")[0].split("_")[-1]
+    config['hps'] = args.hps.split("/")[-1].split(".")[0]#.split("_")[-1]
     config['env_lib'] = env_lib
     
     

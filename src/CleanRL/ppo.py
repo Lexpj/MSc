@@ -85,6 +85,12 @@ class Args:
     lastfolder: int = 1
     alg: str = "ppo"
     stats_window_size: int = 1 
+    
+    # Model parameters
+    net_arch: str = "[64,64]" # Filled in at runtime
+    activation: str = "tanh"
+    ortho_init: bool = True
+    
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
@@ -106,22 +112,72 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs,args):
         super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
-        )
+        self.critic = []
+        net_arch = args.net_arch[1:-1]
+        if net_arch:
+        	net_arch = tuple(map(int, net_arch.split(",")))
+        
+        if not net_arch: # no hidden layers
+            l = nn.Linear(np.array(envs.single_observation_space.shape).prod(), 1)
+            if args.ortho_init:
+                l = layer_init(l,std=1.0)
+            self.critic.append(l)
+        
+        else:
+            l = nn.Linear(np.array(envs.single_observation_space.shape).prod(), net_arch[0])
+            if args.ortho_init:
+                l = layer_init(l)
+            self.critic.append(l)
+            for n1,n2 in zip(net_arch[0:], net_arch[1:]):
+                l = nn.Linear(n1, n2)
+                if args.ortho_init:
+                    l = layer_init(l)
+                self.critic.append(l)
+            l = nn.Linear(net_arch[-1],1)
+            if args.ortho_init:
+                l = layer_init(l,std=1.0)
+            self.critic.append(l)
+        self.critic = nn.Sequential(*self.critic)
+            
+        self.actor = []
+        if not net_arch: # no hidden layers
+            l = nn.Linear(np.array(envs.single_observation_space.shape).prod(), envs.single_action_space.n)
+            if args.ortho_init:
+                l = layer_init(l,std=0.01)
+            self.actor.append(l)
+        
+        else:
+            l = nn.Linear(np.array(envs.single_observation_space.shape).prod(), net_arch[0])
+            if args.ortho_init:
+                l = layer_init(l)
+            self.actor.append(l)
+            for n1,n2 in zip(net_arch[0:], net_arch[1:]):
+                l = nn.Linear(n1, n2)
+                if args.ortho_init:
+                    l = layer_init(l)
+                self.actor.append(l)
+            l = nn.Linear(net_arch[-1],envs.single_action_space.n)
+            if args.ortho_init:
+                l = layer_init(l,std=0.01)
+            self.actor.append(l)
+        self.actor = nn.Sequential(*self.actor)
+        
+        #self.critic = nn.Sequential(
+        #    layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+        #    nn.Tanh(),
+        #    layer_init(nn.Linear(64, 64)),
+        #    nn.Tanh(),
+        #    layer_init(nn.Linear(64, 1), std=1.0),
+        #)
+        #self.actor = nn.Sequential(
+        #    layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+        #    nn.Tanh(),
+        #    layer_init(nn.Linear(64, 64)),
+        #    nn.Tanh(),
+        #    layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+        #)
 
     def get_value(self, x):
         return self.critic(x)
@@ -141,6 +197,8 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.num_iterations = args.total_timesteps // args.batch_size
+    
+    
     run_name = f"{args.rep}_{args.lastfolder}"
     if args.track:
         import wandb
@@ -174,7 +232,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
+    agent = Agent(envs,args).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup

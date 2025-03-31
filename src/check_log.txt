@@ -1,0 +1,1 @@
+Command 'conda run -n CleanRL python ./CleanRL/train_ppo.py --env=CartPole-v1 --alg=ppo --steps=1 --rep=1 --fw=CleanRL --hps=./hps/SB3_ppo_defaultdiscrete.yml' returned non-zero exit status 1.

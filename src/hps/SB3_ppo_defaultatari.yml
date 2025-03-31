@@ -22,12 +22,14 @@ train:
   target_kl: null
   stats_window_size: 100
   
+  anneal_lr: true
+  num_envs: 1
   
 model:
   policy: "CnnPolicy" # Denote that this should be CnnPolicy if applied on Atari.
   policy_kwargs:  
     net_arch: [64,64]
-    #activation_fn: tanh
+    activation: Tanh
     ortho_init: true
   
 logging:
