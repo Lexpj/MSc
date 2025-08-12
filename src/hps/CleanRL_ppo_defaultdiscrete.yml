@@ -11,16 +11,10 @@ train:
   gae_lambda: 0.95 
   clip_range: 0.2
   clip_range_vf: true
-  normalize_advantage: true
   ent_coef: 0.01
   vf_coef: 0.5
-  max_grad_norm: 0.5 
-  use_sde: false
-  sde_sample_freq: -1 
-  rollout_buffer_class: null # not used
-  rollout_buffer_kwargs: null #not used
   target_kl: null
-  stats_window_size: 100 
+  stats_window_size: 1
   
   anneal_lr: true
   num_envs: 1
@@ -38,4 +32,6 @@ logging: # not used
   tensorboard_log: null # Denote that this is configurable via the --log tag.
   log_interval: 1
   
+environment:
+  wrapped: false
   

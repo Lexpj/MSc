@@ -13,7 +13,9 @@ import torch.optim as optim
 import tyro
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
-
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from env_utils import wrap_env
 
 @dataclass
 class Args:
@@ -51,7 +53,7 @@ class Args:
     """the number of parallel game environments"""
     num_steps: int = 2048
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -61,11 +63,11 @@ class Args:
     """the number of mini-batches"""
     update_epochs: int = 10
     """the K epochs to update the policy"""
-    norm_adv: bool = True
+    norm_adv: bool = False
     """Toggles advantages normalization"""
     clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
+    clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
     ent_coef: float = 0.0
     """coefficient of the entropy"""
@@ -92,7 +94,13 @@ class Args:
     alg: str = "ppo"
     stats_window_size: int = 1 
 
-def make_env(env_id, idx, capture_video, run_name, gamma):
+    # Model parameters
+    net_arch: str = "[64,64]" # Filled in at runtime
+    activation: str = "tanh"
+    ortho_init: bool = False
+    wrapped: bool = False
+
+def make_env(env_id, idx, capture_video, run_name, gamma, args, evaluate=False):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
@@ -102,10 +110,8 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
         env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
-        env = gym.wrappers.NormalizeReward(env, gamma=gamma)
-        env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+        if args.wrapped:
+            env = wrap_env(env, {'train':{'gamma':gamma}}, evaluate=evaluate)
         return env
 
     return thunk
@@ -120,6 +126,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
@@ -138,7 +145,11 @@ class Agent(nn.Module):
 
     def get_value(self, x):
         return self.critic(x)
-
+    
+    def greedy_action(self, x):
+	    action_mean = self.actor_mean(x)
+	    return action_mean 
+    
     def get_action_and_value(self, x, action=None):
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd.expand_as(action_mean)
@@ -151,7 +162,63 @@ class Agent(nn.Module):
     def save(self,args):
         torch.save(self.critic.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/critic.pt")
         torch.save(self.actor_mean.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/actor_mean.pt")
+        torch.save(self.actor_logstd, f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/actor_std.pt")
+        
+def evaluate_model(env, agent, run_name, args, episodes=30, deterministic=True):
+    returns = []
+    lengths = []
+    
+    for _ in range(episodes):
+        s,_ = env.reset()
+        s = torch.Tensor(s).to(device)
+        R = 0
+        L = 0
+        while True:
+            a = agent.greedy_action(s)
+            s_prime, r, done, trunc, _ = env.step([a.detach().squeeze().cpu().numpy()])
+            R += r
+            L += 1
+            if done or trunc:
+                break
+            else:
+                s = s_prime
+                s = torch.Tensor(s).to(device)
+        returns.append(R)
+        lengths.append(L)
+    mean_return = np.mean(returns)
+    mean_length = np.mean(lengths)  
+    print("Evaluation:", mean_return, "+-", np.std(returns))  
+    return mean_return, mean_length
 
+def get_obs_rms(env):
+    """
+    Extract the moving distribution from the training normalization wrapper
+    """
+    if hasattr(env, 'envs'):
+        env = env.envs[0]
+    cur_env = env
+    while hasattr(cur_env, 'env'):
+        if isinstance(cur_env, gym.wrappers.NormalizeObservation):
+            return cur_env.obs_rms
+        cur_env = cur_env.env
+    return None
+
+def set_obs_rms(env, obs_rms):
+    """
+    Set the moving distribution from the training normalization wrapper
+    """
+    if hasattr(env, 'envs'):
+        cur_env = env.envs[0]
+    else:
+        cur_env = env
+    while hasattr(cur_env, 'env'):
+        if isinstance(cur_env, gym.wrappers.NormalizeObservation):
+            cur_env.obs_rms = obs_rms
+            print("Set obs_rms from training to eval!")
+            return env
+        cur_env = cur_env.env
+    return None
+    
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -185,7 +252,10 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, args.gamma) for i in range(args.num_envs)]
+        [make_env(args.env_id, i, args.capture_video, run_name, args.gamma, args) for i in range(args.num_envs)]
+    )
+    eval_env = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, i, args.capture_video, run_name, args.gamma, args, evaluate=True) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -208,8 +278,8 @@ if __name__ == "__main__":
     next_done = torch.zeros(args.num_envs).to(device)
     
     # Statistical stuff for plotting
-    ep_len_mean = deque(maxlen=args.stats_window_size)
-    ep_rew_mean = deque(maxlen=args.stats_window_size)
+    ep_len_mean = []
+    ep_rew_mean = []
     
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -220,6 +290,17 @@ if __name__ == "__main__":
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
+            eval_step = 10000
+
+            # Logic for logging evaluation
+            if (global_step-args.num_envs)%eval_step > global_step%eval_step:
+                distr_norm_obs = get_obs_rms(envs)
+                if distr_norm_obs != None:
+                    eval_env = set_obs_rms(eval_env, distr_norm_obs)
+                mean_rew_eval, mean_len_eval = evaluate_model(eval_env, agent, run_name=run_name, args=args)
+                writer.add_scalar("eval/mean_ep_length", mean_len_eval, eval_step * (global_step//eval_step))
+                writer.add_scalar("eval/mean_reward", mean_rew_eval, eval_step * (global_step//eval_step))
+
             obs[step] = next_obs
             dones[step] = next_done
 
@@ -242,11 +323,10 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+
                         # Statistics matching SB3
                         ep_len_mean.append(info["episode"]["l"])
                         ep_rew_mean.append(info["episode"]["r"])
-                        writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
-                        writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -325,7 +405,14 @@ if __name__ == "__main__":
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
+        
+        if len(ep_len_mean):
+            writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
+            writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
 
+        ep_len_mean = []
+        ep_rew_mean = []
+        
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -341,7 +428,9 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("time/fps", int(global_step / (time.time() - start_time)), global_step)
-
+        
+        
+        
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(agent.state_dict(), model_path)
@@ -371,3 +460,4 @@ if __name__ == "__main__":
     envs.close()
     writer.close()
     agent.save(args)
+

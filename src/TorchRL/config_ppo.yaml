@@ -1,0 +1,49 @@
+# task and env
+lastfolder: 1
+rep: 1
+hps: test
+
+env:
+  env_name: HalfCheetah-v4
+  wrapped: false
+
+# collector
+collector:
+  frames_per_batch: 2048
+  total_frames: 100000
+
+# logger
+logger:
+  backend: tensorboard
+  project_name: torchrl_example_ppo
+  group_name: null
+  exp_name: Mujoco_Schulman17
+  test_interval: 10000
+  num_test_episodes: 30
+  video: False
+
+# Optim
+optim:
+  lr: 3e-4
+  weight_decay: 0.0
+  anneal_lr: True
+  device:
+
+# loss
+loss:
+  gamma: 0.99
+  mini_batch_size: 64
+  ppo_epochs: 10
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  clip_range_vf: false
+  normalize_advantage: true
+  anneal_clip_epsilon: False
+  critic_coef: 0.25
+  entropy_coef: 0.0
+  loss_critic_type: l2
+
+compile:
+  compile: False
+  compile_mode:
+  cudagraphs: False

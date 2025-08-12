@@ -1,0 +1,13 @@
+name: SB3_test
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.9.0
+  - pip
+  - pip:
+      - stable-baselines3[extra]
+      - gymnasium
+      - pyyaml
+      #- 'cython<3'
+      #- 'mujoco-py>=2.1,<2.2'

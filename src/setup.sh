@@ -7,6 +7,8 @@ declare -A env_files
 env_files["SB3"]="./envs/SB3.yml"
 env_files["CleanRL"]="./envs/CleanRL.yml"
 env_files["tianshou"]="./envs/tianshou.yml"
+env_files['SB3_test']="./envs/SB3_test.yml"
+env_files['TorchRL']="./envs/TorchRL.yml"
 
 # Function to install an environment
 install_env() {

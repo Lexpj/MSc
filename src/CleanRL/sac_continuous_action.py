@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from collections import deque
 
 import gymnasium as gym
 import numpy as np
@@ -39,7 +40,7 @@ class Args:
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    num_envs: int = 1
+    num_envs: int = 8
     """the number of parallel game environments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
@@ -61,8 +62,20 @@ class Args:
     """the frequency of updates for the target nerworks"""
     alpha: float = 0.2
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
+    
+    # meta-hyperparameters or unused hyperparameters
+    fw: str = "CleanRL" 
+    rep: int = 1
+    hps: str = "./hps/CleanRL_ppo_defaultmujoco.yml"
+    lastfolder: int = 1
+    alg: str = "ppo"
+    stats_window_size: int = 1 
+
+    # Model parameters
+    net_arch: str = "[64,64]" # Filled in at runtime
+    activation: str = "tanh"
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -73,7 +86,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
+
         return env
 
     return thunk
@@ -148,8 +161,42 @@ class Actor(nn.Module):
         log_prob = log_prob.sum(1, keepdim=True)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
+       
+    def greedy_action(self, x):
+        mean, log_std = self(x)
+        y_t = torch.tanh(mean)
+        action = y_t * self.action_scale + self.action_bias
+        return action
 
-
+def evaluate_model(env, agent, run_name, args, episodes=30, deterministic=True):
+    returns = []
+    lengths = []
+    
+    for _ in range(episodes):
+        s,_ = env.reset()
+        s = torch.Tensor(s).to(device)
+        R = 0
+        L = 0
+        while True:
+            a = agent.greedy_action(s)
+            try:
+                s_prime, r, done, trunc, _ = env.step([a.detach().squeeze().cpu().numpy()])
+            except: # Action is singular value
+                s_prime, r, done, trunc, _ = env.step([np.array([a.item()])])
+            R += r
+            L += 1
+            if done or trunc:
+                break
+            else:
+                s = s_prime
+                s = torch.Tensor(s).to(device)
+        returns.append(R)
+        lengths.append(L)
+    mean_return = np.mean(returns)
+    mean_length = np.mean(lengths)  
+    print("Evaluation:", mean_return, "+-", np.std(returns))  
+    return mean_return, mean_length
+    
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -161,7 +208,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         )
 
     args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.rep}_{args.lastfolder}"
     if args.track:
         import wandb
 
@@ -174,16 +221,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    #random.seed(args.seed)
+    #np.random.seed(args.seed)
+    #torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
@@ -191,6 +238,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     # env setup
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
+    )
+    eval_env = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(1)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -205,7 +255,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     qf2_target.load_state_dict(qf2.state_dict())
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
-
+    print(actor)
+    print(qf1)
     # Automatic entropy tuning
     if args.autotune:
         target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
@@ -225,10 +276,22 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         handle_timeout_termination=False,
     )
     start_time = time.time()
-
+    
+    # Statistical stuff for plotting
+    ep_len_mean = []
+    ep_rew_mean = []
+    
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
+        eval_step = 10000
+        if global_step%eval_step == 0:
+            mean_rew_eval, mean_len_eval = evaluate_model(eval_env, actor, run_name=run_name, args=args)
+            writer.add_scalar("eval/mean_ep_length", mean_len_eval, eval_step * (global_step//eval_step))
+            writer.add_scalar("eval/mean_reward", mean_rew_eval, eval_step * (global_step//eval_step))
+
+    
+    
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -246,6 +309,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                     writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    # Statistics matching SB3
+                    ep_len_mean.append(info["episode"]["l"])
+                    ep_rew_mean.append(info["episode"]["r"])
                     break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -310,22 +376,28 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            if global_step % 100 == 0:
+            if global_step % 1000 == 0:
+                if len(ep_len_mean):
+                    writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
+                    writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
+
+                ep_len_mean = []
+                ep_rew_mean = []
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
+                writer.add_scalar("train/actor_loss", actor_loss.item(), global_step)
+                writer.add_scalar("train/ent_coef", alpha, global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar(
-                    "charts/SPS",
+                    "time/FPS",
                     int(global_step / (time.time() - start_time)),
                     global_step,
                 )
                 if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                    writer.add_scalar("train/ent_coef_loss", alpha_loss.item(), global_step)
 
     envs.close()
     writer.close()

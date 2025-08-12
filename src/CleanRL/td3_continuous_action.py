@@ -41,7 +41,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "Hopper-v4"
+    env_id: str = "InvertedPendulum-v4"
     """the id of the environment"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -67,7 +67,17 @@ class Args:
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
+    
+    # meta-hyperparameters or unused hyperparameters
+    fw: str = "CleanRL" 
+    rep: int = 1
+    hps: str = "./hps/CleanRL_td3_defaultmujoco.yml"
+    lastfolder: int = 1
+    alg: str = "td3"
+    stats_window_size: int = 1 
 
+    # Model parameters
+    net_arch: str = "[256,256]" # Filled in at runtime
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -77,7 +87,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
+
         return env
 
     return thunk
@@ -85,14 +95,16 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,args):
         super().__init__()
+        h1,h2 = map(int,args.net_arch[1:-1].split(","))
+        
         self.fc1 = nn.Linear(
             np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape),
-            256,
+            h1,
         )
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+        self.fc2 = nn.Linear(h1, h2)
+        self.fc3 = nn.Linear(h2, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
@@ -103,11 +115,13 @@ class QNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,args):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(env.single_action_space.shape))
+        h1,h2 = map(int,args.net_arch[1:-1].split(","))
+        
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), h1)
+        self.fc2 = nn.Linear(h1, h2)
+        self.fc_mu = nn.Linear(h2, np.prod(env.single_action_space.shape))
         # action rescaling
         self.register_buffer(
             "action_scale",
@@ -129,6 +143,43 @@ class Actor(nn.Module):
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc_mu(x))
         return x * self.action_scale + self.action_bias
+        
+    def greedy_action(self,x):
+        # Action noise is added within the main loop. The way forward is now coded,
+        # is in line with action scaling due to a standard deviation missing from the network
+        # No hard clip needed, as this way of scaling is already mathematically bound to the action space limits
+        return self.forward(x)
+
+def evaluate_model(env, agent, run_name, args, episodes=30, deterministic=True):
+    returns = []
+    lengths = []
+    
+    for _ in range(episodes):
+        s,_ = env.reset()
+        s = torch.Tensor(s).to(device)
+        R = 0
+        L = 0
+        while True:
+            a = agent.greedy_action(s)
+
+            try:
+                s_prime, r, done, trunc, _ = env.step([a.detach().squeeze().cpu().numpy()])
+            except: # Action is singular value
+                s_prime, r, done, trunc, _ = env.step([np.array([a.item()])])
+            
+            R += r
+            L += 1
+            if done or trunc:
+                break
+            else:
+                s = s_prime
+                s = torch.Tensor(s).to(device)
+        returns.append(R)
+        lengths.append(L)
+    mean_return = np.mean(returns)
+    mean_length = np.mean(lengths)  
+    print("Evaluation:", mean_return, "+-", np.std(returns))  
+    return mean_return, mean_length
 
 
 if __name__ == "__main__":
@@ -142,7 +193,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         )
 
     args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.rep}_{args.lastfolder}"
     if args.track:
         import wandb
 
@@ -155,38 +206,45 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    #random.seed(args.seed)
+    #np.random.seed(args.seed)
+    #torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
+    # env setup    
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
+    eval_env = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(1)]
+    )
+    
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    actor = Actor(envs).to(device)
-    qf1 = QNetwork(envs).to(device)
-    qf2 = QNetwork(envs).to(device)
-    qf1_target = QNetwork(envs).to(device)
-    qf2_target = QNetwork(envs).to(device)
-    target_actor = Actor(envs).to(device)
+    actor = Actor(envs,args).to(device)
+    qf1 = QNetwork(envs,args).to(device)
+    qf2 = QNetwork(envs,args).to(device)
+    qf1_target = QNetwork(envs,args).to(device)
+    qf2_target = QNetwork(envs,args).to(device)
+    target_actor = Actor(envs,args).to(device)
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
     qf2_target.load_state_dict(qf2.state_dict())
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.learning_rate)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
-
+    
+    print(actor)
+    print(qf1)
+    
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
         args.buffer_size,
@@ -197,10 +255,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         handle_timeout_termination=False,
     )
     start_time = time.time()
-
+    
+    # Statistical stuff for plotting
+    ep_len_mean = []
+    ep_rew_mean = []
+    
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
+        eval_step = 10000
+        if global_step%eval_step == 0:
+            mean_rew_eval, mean_len_eval = evaluate_model(eval_env, actor, run_name=run_name, args=args)
+            writer.add_scalar("eval/mean_ep_length", mean_len_eval, eval_step * (global_step//eval_step))
+            writer.add_scalar("eval/mean_reward", mean_rew_eval, eval_step * (global_step//eval_step))
+    
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -220,6 +288,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                     writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    # Statistics matching SB3
+                    ep_len_mean.append(info["episode"]["l"])
+                    ep_rew_mean.append(info["episode"]["r"])
                     break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -274,6 +345,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             if global_step % 100 == 0:
+                if len(ep_len_mean):
+                    writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
+                    writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
+            
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
@@ -282,7 +357,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar(
-                    "charts/SPS",
+                    "time/FPS",
                     int(global_step / (time.time() - start_time)),
                     global_step,
                 )
@@ -322,3 +397,4 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     envs.close()
     writer.close()
+

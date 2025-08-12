@@ -13,6 +13,9 @@ import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from env_utils import wrap_env
 
 
 @dataclass
@@ -45,21 +48,19 @@ class Args:
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
-    """the number of mini-batches"""
     update_epochs: int = 4
     """the K epochs to update the policy"""
-    norm_adv: bool = True
+    norm_adv: bool = False
     """Toggles advantages normalization"""
     clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
+    clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
     ent_coef: float = 0.01
     """coefficient of the entropy"""
@@ -70,13 +71,12 @@ class Args:
     target_kl: float = None
     """the target KL divergence threshold"""
     minibatch_size: int = 32
-    """the mini-batch size"""
+    """the mini-batch size, partition of the rollout"""
 
-    # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
+    batch_size: int = 0
+    """rollout buffer size, calculated at runtime"""
     
     # meta-hyperparameters or unused hyperparameters
     fw: str = "CleanRL" 
@@ -89,10 +89,11 @@ class Args:
     # Model parameters
     net_arch: str = "[64,64]" # Filled in at runtime
     activation: str = "tanh"
-    ortho_init: bool = True
+    ortho_init: bool = False
+    wrapped: bool = False
     
 
-def make_env(env_id, idx, capture_video, run_name):
+def make_env(env_id, idx, capture_video, run_name, args, evaluate=False):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
@@ -100,6 +101,8 @@ def make_env(env_id, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        if args.wrapped:
+            env = wrap_env(env, {'train':{'gamma':args.gamma}}, evaluate=evaluate)
         return env
 
     return thunk
@@ -117,7 +120,7 @@ class Agent(nn.Module):
         self.critic = []
         net_arch = args.net_arch[1:-1]
         if net_arch:
-        	net_arch = tuple(map(int, net_arch.split(",")))
+            net_arch = tuple(map(int, net_arch.split(",")))
         
         if not net_arch: # no hidden layers
             l = nn.Linear(np.array(envs.single_observation_space.shape).prod(), 1)
@@ -164,20 +167,20 @@ class Agent(nn.Module):
             self.actor.append(l)
         self.actor = nn.Sequential(*self.actor)
         
-        #self.critic = nn.Sequential(
-        #    layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-        #    nn.Tanh(),
-        #    layer_init(nn.Linear(64, 64)),
-        #    nn.Tanh(),
-        #    layer_init(nn.Linear(64, 1), std=1.0),
-        #)
-        #self.actor = nn.Sequential(
-        #    layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-        #    nn.Tanh(),
-        #    layer_init(nn.Linear(64, 64)),
-        #    nn.Tanh(),
-        #    layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
-        #)
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1), std=1.0),
+        )
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+        )
 
     def get_value(self, x):
         return self.critic(x)
@@ -188,11 +191,72 @@ class Agent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
-
+    
+    def greedy_action(self, x):
+        logits = self.actor(x)
+        probs = Categorical(logits=logits)
+        return torch.argmax(probs.probs)
+        
     def save(self,args):
         torch.save(self.critic.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/critic.pt")
         torch.save(self.actor.state_dict(), f"./results/{args.alg}_{args.env_id}_{args.total_timesteps}/{args.hps}/{args.rep}_{args.lastfolder}/actor.pt")
 
+
+def evaluate_model(env, agent, run_name, episodes=30, deterministic=True):
+    returns = []
+    lengths = []
+    
+    for _ in range(episodes):
+        s,_ = env.reset()
+        s = torch.Tensor(s).to(device)
+        R = 0
+        L = 0
+        while True:
+            a = agent.greedy_action(s)
+            s_prime, r, done, trunc, _ = env.step([a.cpu().numpy()])
+            R += r
+            L += 1
+            if done or trunc:
+                break
+            else:
+                s = s_prime
+                s = torch.Tensor(s).to(device)
+        returns.append(R)
+        lengths.append(L)
+    mean_return = np.mean(returns)
+    mean_length = np.mean(lengths)   
+    print("Evaluation:", mean_return, "+-", np.std(returns))  
+    return mean_return, mean_length
+
+def get_obs_rms(env):
+    """
+    Extract the moving distribution from the training normalization wrapper
+    """
+    if hasattr(env, 'envs'):
+        env = env.envs[0]
+    cur_env = env
+    while hasattr(cur_env, 'env'):
+        if isinstance(cur_env, gym.wrappers.NormalizeObservation):
+            return cur_env.obs_rms
+        cur_env = cur_env.env
+    return None
+
+def set_obs_rms(env, obs_rms):
+    """
+    Set the moving distribution from the training normalization wrapper
+    """
+    if hasattr(env, 'envs'):
+        cur_env = env.envs[0]
+    else:
+        cur_env = env
+    while hasattr(cur_env, 'env'):
+        if isinstance(cur_env, gym.wrappers.NormalizeObservation):
+            cur_env.obs_rms = obs_rms
+            print("Set obs_rms from training to eval!")
+            return env
+        cur_env = cur_env.env
+    return None
+    
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -228,13 +292,21 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
+    )
+    eval_env = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, i, False, run_name, args, evaluate=True) for i in range(1)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs,args).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-
+    
+    with open(f"{args.hps}.txt","w+") as f:
+        f.write(str(args))
+        f.write(str(agent.actor))
+        f.write(str(agent.critic))
+    
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -246,13 +318,13 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, _ = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     
     # Statistical stuff for plotting
-    ep_len_mean = deque(maxlen=args.stats_window_size)
-    ep_rew_mean = deque(maxlen=args.stats_window_size)
+    ep_len_mean = []
+    ep_rew_mean = []
     
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -263,6 +335,17 @@ if __name__ == "__main__":
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
+            eval_step = 5000
+
+            # Logic for logging evaluation
+            if (global_step-args.num_envs)%eval_step > global_step%eval_step:
+                distr_norm_obs = get_obs_rms(envs)
+                if distr_norm_obs != None:
+                    eval_env = set_obs_rms(eval_env, distr_norm_obs)
+                mean_rew_eval, mean_len_eval = evaluate_model(eval_env, agent, run_name=run_name)
+                writer.add_scalar("eval/mean_ep_length", mean_len_eval, eval_step * (global_step//eval_step))
+                writer.add_scalar("eval/mean_reward", mean_rew_eval, eval_step * (global_step//eval_step))
+            
             obs[step] = next_obs
             dones[step] = next_done
 
@@ -283,14 +366,13 @@ if __name__ == "__main__":
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        writer.add_scalar("train/episodic_return", info["episode"]["r"], global_step)
+                        writer.add_scalar("train/episodic_length", info["episode"]["l"], global_step)
                         # Statistics matching SB3
                         ep_len_mean.append(info["episode"]["l"])
                         ep_rew_mean.append(info["episode"]["r"])
-                        writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
-                        writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
-
+                        
+        
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -332,6 +414,7 @@ if __name__ == "__main__":
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
+
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
                 mb_advantages = b_advantages[mb_inds]
@@ -368,20 +451,28 @@ if __name__ == "__main__":
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
+        
+        if len(ep_len_mean):
+            writer.add_scalar("rollout/ep_len_mean", np.mean(ep_len_mean), global_step)
+            writer.add_scalar("rollout/ep_rew_mean", np.mean(ep_rew_mean), global_step)
 
+        ep_len_mean = []
+        ep_rew_mean = []
+            
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("train/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("train/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("train/policy_gradient_loss", pg_loss.item(), global_step)
+        writer.add_scalar("train/loss", loss.item(), global_step)
+        writer.add_scalar("train/entropy_loss", -entropy_loss.item(), global_step)
+        writer.add_scalar("train/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("train/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("train/clip_fraction", np.mean(clipfracs), global_step)
+        writer.add_scalar("train/explained_variance", -explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         # Renamed to "time/fps"
         writer.add_scalar("time/fps", int(global_step / (time.time() - start_time)), global_step)
@@ -389,3 +480,4 @@ if __name__ == "__main__":
     envs.close()
     writer.close()
     agent.save(args)
+

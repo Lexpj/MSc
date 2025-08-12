@@ -1,0 +1,38 @@
+# File containing the default hyperparameters of Discrete PPO from framework CleanRL
+# The hyperparameters as listed below can be found here: 
+# https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
+
+train:
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95 
+  clip_range: 0.2
+  clip_range_vf: false
+  ent_coef: 0.0
+  vf_coef: 0.25
+  target_kl: null 
+  stats_window_size: 1
+  
+  anneal_lr: true
+  num_envs: 1
+  
+  
+  
+  
+model: # not used
+  policy: "MlpPolicy" # Denote that this should be CnnPolicy if applied on Atari.
+  policy_kwargs:  
+    net_arch: [64,64]
+    activation: Tanh
+    ortho_init: true
+  
+logging: # not used
+  tensorboard_log: null # Denote that this is configurable via the --log tag.
+  log_interval: 1
+  
+environment:
+  wrapped: false
+  

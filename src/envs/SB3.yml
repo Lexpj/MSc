@@ -10,5 +10,5 @@ dependencies:
       - gymnasium
       - gymnasium[mujoco]
       - pyyaml
-      - 'cython<3'
-      - 'mujoco-py>=2.1,<2.2'
+      #- 'cython<3'
+      #- 'mujoco-py>=2.1,<2.2'

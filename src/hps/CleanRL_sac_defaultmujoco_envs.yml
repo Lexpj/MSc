@@ -1,0 +1,29 @@
+# File containing the default hyperparameters of SAC from framework CleanRL
+# The hyperparameters as listed below can be found here: 
+# https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/sac_continuous_action.py
+
+train:
+  learning_rate: 0.0003 
+  buffer_size: 1000000
+  learning_starts: 5000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  ent_coef: 'auto'
+  
+  stats_window_size: 1
+  num_envs: 8
+  
+model: # not used
+  policy: "MlpPolicy" # Denote that this should be CnnPolicy if applied on Atari.
+  policy_kwargs:  
+    net_arch: [256,256]
+    activation: ReLU
+  
+logging: # not used
+  tensorboard_log: null # Denote that this is configurable via the --log tag.
+  log_interval: 1
+  
+environment:
+  wrapped: false
+  

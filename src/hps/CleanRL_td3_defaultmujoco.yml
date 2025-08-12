@@ -1,0 +1,33 @@
+# File containing the default hyperparameters of TD3 from framework SB3
+# The hyperparameters as listed below can be found here: 
+
+train:
+  learning_rate: 0.0003
+  buffer_size: 1000000
+  learning_starts: 25000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1 # leave open, correct for both
+  gradient_steps: 1 # leave open, not used in CleanRL. Instead, policy_frequency is used. 
+  policy_delay: 2 # leave open, for fair comparison, leave it at 1 such that an equal amount of updates is done for both SB3 and CleanRL
+  target_policy_noise: 0.2
+  target_noise_clip: 0.5
+  action_noise: 0.1 # Denote that the scale is included as constant in CleanRL and custom handcoded within SB3
+  
+  stats_window_size: 1
+  num_envs: 1 
+  
+model: # not used
+  policy: "MlpPolicy" # Denote that this should be CnnPolicy if applied on Atari.
+  policy_kwargs:  
+    net_arch: [256,256]
+    activation: ReLU
+  
+logging: # not used
+  tensorboard_log: null # Denote that this is configurable via the --log tag.
+  log_interval: 1
+  
+environment:
+  wrapped: false
+  

@@ -1,4 +1,0 @@
-#!/bin/bash
-
-conda env remove -n "SB3" -y
-conda env create -f "./envs/SB3.yml"
